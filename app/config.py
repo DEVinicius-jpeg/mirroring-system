@@ -6,6 +6,18 @@ from pathlib import Path
 PAINEL_SENHA = os.environ.get("PAINEL_SENHA", "")
 SEGREDO_SESSAO = os.environ.get("SEGREDO_SESSAO") or secrets.token_hex(32)
 
+# Cookie de uma conta (secundária) logada no TikTok. Opcional: só é preciso
+# para lives que exigem login. Aceita o valor do "sessionid" ou a linha
+# inteira de cookies ("nome=valor; nome2=valor2").
+TIKTOK_COOKIE = os.environ.get("TIKTOK_COOKIE", "").strip()
+
+# Aviso por WhatsApp (Evolution API) quando a retransmissão para sozinha.
+# Opcional: com algum destes vazio, nenhum aviso é enviado.
+WHATSAPP_API_URL = os.environ.get("WHATSAPP_API_URL", "").strip()
+WHATSAPP_INSTANCIA = os.environ.get("WHATSAPP_INSTANCIA", "").strip()
+WHATSAPP_API_KEY = os.environ.get("WHATSAPP_API_KEY", "").strip()
+WHATSAPP_NUMERO = "".join(c for c in os.environ.get("WHATSAPP_NUMERO", "") if c.isdigit())
+
 DADOS_DIR = Path(os.environ.get("DADOS_DIR", "/data"))
 BANCO = DADOS_DIR / "espelho.db"
 

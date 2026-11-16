@@ -19,7 +19,7 @@ import threading
 import time
 from collections import deque
 
-from . import config, db, fonte
+from . import aviso, config, db, fonte
 
 log = logging.getLogger("retransmissao")
 
@@ -27,6 +27,33 @@ log = logging.getLogger("retransmissao")
 LIVE_ESTAVEL_SEG = 30
 # Folga somada ao relógio do vídeo a cada troca de alimentador.
 MARGEM_TROCA_SEG = 2
+# Linhas recentes do FFmpeg de saída guardadas para diagnóstico.
+LINHAS_LOG_SAIDA = 40
+# Quantas dessas linhas aparecem no aviso do painel.
+LINHAS_AVISO_PAINEL = 12
+
+
+def _trechos_secretos(destino: str) -> list[str]:
+    """Partes do destino que revelam a chave, da mais longa para a mais curta.
+
+    No nível verbose o FFmpeg cita a chave sozinha (ex.: no comando de
+    publicação), não só o destino inteiro, então cada parte é ocultada.
+    """
+    trechos = {destino}
+    _, _, resto = destino.partition("://")
+    partes = resto.split("/")
+    if len(partes) > 2:                      # host / app / chave...
+        chave = "/".join(partes[2:])
+        trechos.add(chave)
+        base, _, consulta = chave.partition("?")
+        trechos.update(p for p in (base, consulta) if p)
+    return sorted((t for t in trechos if len(t) >= 6), key=len, reverse=True)
+
+
+def ocultar(texto: str, destino: str) -> str:
+    for t in _trechos_secretos(destino):
+        texto = texto.replace(t, "[chave]" if t != destino else "[destino]")
+    return texto
 
 
 def _args_codificacao() -> list[str]:
@@ -44,6 +71,30 @@ def _args_codificacao() -> list[str]:
         "-b:v", f"{vb}k", "-maxrate", f"{vb}k", "-bufsize", f"{vb * 2}k",
         "-c:a", "aac", "-b:a", f"{config.AUDIO_BITRATE_K}k", "-ar", "44100", "-ac", "2",
     ]
+
+
+def _duracao(seg: float) -> str:
+    m = int(seg // 60)
+    return f"{m // 60}h{m % 60:02d}min" if m >= 60 else f"{m} min"
+
+
+def _mensagem_fim(usuario: str, resultado: str, chegou_ao_vivo: bool, durou: float) -> str:
+    """Texto do WhatsApp quando a retransmissão para sozinha."""
+    hora = time.strftime("%H:%M")
+    espera = _duracao(config.ESPERA_MAX_SEG)
+    if resultado.startswith("live do criador"):
+        if chegou_ao_vivo:
+            corpo = (f"A live de @{usuario} no TikTok terminou (sem sinal por {espera}). "
+                     f"A retransmissão parou às {hora}, após {_duracao(durou)}.")
+        else:
+            corpo = (f"A live de @{usuario} no TikTok não foi encontrada em {espera}. "
+                     f"A retransmissão parou às {hora} sem ter entrado ao vivo.")
+    elif "Shopee" in resultado:
+        corpo = (f"A retransmissão de @{usuario} parou às {hora}: a Shopee recusou ou "
+                 f"encerrou o envio. Veja o detalhe no painel.")
+    else:
+        corpo = f"A retransmissão de @{usuario} parou às {hora}: {resultado}."
+    return f"⚠️ espelho-live\n{corpo}\n\nEncerre a live na Shopee."
 
 
 def montar_destino(url: str, chave: str) -> str:
@@ -67,7 +118,7 @@ class Retransmissor:
         self.segundos_espera = 0.0
         self.espera_desde: float | None = None
         self.ultimo_aviso: dict | None = None   # mostrado no painel até ser dispensado
-        self._erros_saida: deque[str] = deque(maxlen=8)
+        self._erros_saida: deque[str] = deque(maxlen=LINHAS_LOG_SAIDA)
 
     # ---------- controle ----------
 
@@ -126,12 +177,21 @@ class Retransmissor:
         t0 = time.monotonic()
         trocas = 0
         saida = None
+        chegou_ao_vivo = False
         try:
             saida = subprocess.Popen(
                 [
-                    "ffmpeg", "-hide_banner", "-loglevel", "error",
+                    # verbose: mostra as etapas do RTMP e a resposta da Shopee.
+                    "ffmpeg", "-hide_banner", "-nostats", "-loglevel", "level+verbose",
                     "-fflags", "+genpts", "-f", "mpegts", "-i", "pipe:0",
-                    "-c", "copy", "-bsf:a", "aac_adtstoasc",
+                    # Vídeo segue sem recodificar. O áudio é recodificado aqui
+                    # porque copiar o AAC do mpegts (ADTS) faz o FLV abrir com
+                    # um cabeçalho de áudio vazio, seguido do correto depois;
+                    # servidores exigentes, como o da Shopee, derrubam a conexão.
+                    "-c:v", "copy",
+                    "-af", "aresample=async=1",
+                    "-c:a", "aac", "-b:a", f"{config.AUDIO_BITRATE_K}k", "-ar", "44100", "-ac", "2",
+                    "-flvflags", "no_duration_filesize",
                     "-f", "flv", destino,
                 ],
                 stdin=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -163,6 +223,7 @@ class Retransmissor:
 
                 # ----- live -----
                 self.estado = "ao_vivo"
+                chegou_ao_vivo = True
                 desloc = time.monotonic() - t0 + trocas * MARGEM_TROCA_SEG
                 trocas += 1
                 ini_live = time.monotonic()
@@ -187,12 +248,20 @@ class Retransmissor:
             self.espera_desde = None
             db.fechar_sessao(sid, self.quedas, int(self.segundos_espera), resultado)
             if alerta:
-                detalhe = " | ".join(self._erros_saida) if "Shopee" in resultado else ""
+                detalhe = ""
+                if "Shopee" in resultado:
+                    linhas = list(self._erros_saida)
+                    log.warning(
+                        "saída do FFmpeg (últimas %d linhas):\n  %s",
+                        len(linhas), "\n  ".join(linhas) or "(nada)",
+                    )
+                    detalhe = " | ".join(linhas[-LINHAS_AVISO_PAINEL:])
                 self.ultimo_aviso = {
                     "quando": time.time(),
                     "texto": f"Retransmissão de @{usuario}: {resultado}.",
                     "detalhe": detalhe,
                 }
+                aviso.whatsapp(_mensagem_fim(usuario, resultado, chegou_ao_vivo, time.time() - self.inicio))
             log.info("retransmissão de @%s finalizada: %s", usuario, resultado)
 
     def _espera(self, saida, usuario: str, desloc: float, limite: float) -> str:
@@ -286,7 +355,7 @@ class Retransmissor:
             texto = linha.decode("utf-8", "replace").strip()
             if texto:
                 # A chave nunca aparece em registro nem no painel.
-                self._erros_saida.append(texto.replace(destino, "[destino]"))
+                self._erros_saida.append(ocultar(texto, destino))
 
     @staticmethod
     def _encerrar(proc, gentil: bool = False) -> None:

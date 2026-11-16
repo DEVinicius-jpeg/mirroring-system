@@ -38,6 +38,41 @@ fora do Git. Para atualizar depois de um `git pull`: `docker compose up -d --bui
 Responda o chat da Shopee pelo aplicativo ou pela Central do Vendedor e repasse
 as perguntas ao criador pelo canal combinado.
 
+## Aviso por WhatsApp
+
+Quando a retransmissão para sozinha, o sistema manda uma mensagem no WhatsApp
+pela Evolution API, lembrando de encerrar a live na Shopee. Isso acontece quando:
+
+- a live do criador terminou: ficou sem sinal pelo tempo de `ESPERA_MAX_SEG`
+  (3 min por padrão). Quedas curtas, que voltam antes disso, não geram aviso;
+- a live do criador não foi encontrada ao iniciar;
+- a Shopee recusou ou encerrou o envio, ou houve erro interno.
+
+Parar pelo botão do painel não gera aviso. Para ativar, preencha as variáveis
+`WHATSAPP_*` no `.env` (veja `.env.example`) e rode `docker compose up -d`.
+Se a mensagem não chegar, procure por `aviso` em `docker compose logs`.
+
+## Lives que pedem login no TikTok
+
+Algumas lives (por exemplo, com restrição de idade) só entregam o vídeo para
+quem está logado. Sem conta, o painel mostra a tela de espera mesmo com o
+criador ao vivo. Para essas, o sistema pode usar uma conta do TikTok:
+
+1. Use uma **conta secundária**, criada só para isso, com idade de adulto
+   cadastrada. O cookie dá acesso total à conta, como uma senha, e o TikTok
+   pode limitar contas usadas assim.
+2. Entre nessa conta em um navegador, abra `tiktok.com`, aperte F12 e vá em
+   **Aplicativo** (Chrome/Edge) ou **Armazenamento** (Firefox) > **Cookies** >
+   `https://www.tiktok.com`. Copie o **valor** do cookie `sessionid`.
+3. No `.env`, preencha `TIKTOK_COOKIE=` com esse valor e rode
+   `docker compose up -d`.
+
+O cookie fica só no `.env` (fora do Git) e não aparece no painel nem nos
+registros. Ele expira de tempos em tempos e também deixa de valer se você sair
+da conta nesse navegador: quando lives com login voltarem a cair na tela de
+espera, copie um novo. Se só o `sessionid` não bastar, cole a linha inteira de
+cookies (`nome=valor; nome2=valor2`).
+
 ## Detecção automática
 
 Quando ativada, o sistema consulta o perfil de cada criador autorizado a cada
@@ -55,6 +90,7 @@ enviado é vertical 720x1280, 30 fps, H.264 + AAC, 2500 kbit/s (ajustável no `.
 | Sintoma | O que verificar |
 |---|---|
 | Fica em "Conectando" e encerra em 3 min | O criador está mesmo ao vivo? O usuário está escrito certo? Se sim, o TikTok pode ter mudado: atualize com `docker compose build --no-cache` e suba de novo. |
+| Criador ao vivo, mas o painel fica na tela de espera | Abra a live numa janela anônima. Se pedir login, preencha ou renove `TIKTOK_COOKIE` (veja "Lives que pedem login no TikTok"). |
 | Aviso "erro no envio para a Shopee" | URL ou chave erradas ou vencidas (gere outras criando nova live), ou a Shopee encerrou a sessão. O detalhe técnico aparece no aviso. |
 | Imagem travando | Processador da máquina no limite ou internet instável. Reduza `VIDEO_BITRATE_K`. |
 
