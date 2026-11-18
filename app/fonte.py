@@ -60,6 +60,20 @@ if COOKIES:
     log.info("TikTok: usando conta logada (%d cookie(s))", len(COOKIES))
 
 
+# Qualidades em ordem de preferência. Só H.264 com vídeo ("h264_ao" é só
+# áudio). O H.265 do TikTok vem num FLV fora do padrão que o FFmpeg não lê
+# (vídeo "unknown"), então "best", que costuma ser "h265_origin", fica por
+# último, só para o caso de não haver H.264.
+QUALIDADES = [
+    "h264_origin", "h264_uhd_60", "h264_uhd", "h264_hd_60", "h264_hd",
+    "h264_sd", "h264_ld", "best",
+]
+
+
+def escolher_qualidade(disponiveis) -> str | None:
+    return next((q for q in QUALIDADES if q in disponiveis), None)
+
+
 def url_live(usuario: str) -> str:
     return f"https://www.tiktok.com/@{usuario}/live"
 
@@ -74,7 +88,10 @@ def _sessao() -> Streamlink:
 def esta_ao_vivo(usuario: str) -> bool:
     """True se o criador está com uma live no ar e o vídeo está acessível agora."""
     try:
-        return bool(_sessao().streams(url_live(usuario)))
+        streams = _sessao().streams(url_live(usuario))
+        if streams and not escolher_qualidade(streams).startswith("h264"):
+            log.warning("@%s está ao vivo só em %s; a captura pode falhar", usuario, list(streams))
+        return bool(streams)
     except StreamlinkError as e:
         log.info("verificação de @%s falhou: %s", usuario, e)
         return False
@@ -91,5 +108,5 @@ def comando_captura(usuario: str) -> list[str]:
     return cmd + [
         "--stdout", "--loglevel", "error",
         "--retry-open", "2",
-        url_live(usuario), "best",
+        url_live(usuario), ",".join(QUALIDADES),
     ]
